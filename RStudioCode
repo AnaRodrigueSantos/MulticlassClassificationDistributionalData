@@ -7,9 +7,6 @@ knitr::opts_chunk$set(
 )
 ```
 
-Ana Santos, student number 202103086
-M:DS, FCUP
-
 ```{r packages}
 library(caret)
 library(ggplot2)
