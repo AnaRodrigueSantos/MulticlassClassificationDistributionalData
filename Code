@@ -1,0 +1,2053 @@
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+Ana Santos, student number 202103086
+M:DS, FCUP
+
+```{r packages}
+library(caret)
+library(ggplot2)
+library(HistDAWass)
+library(Rcpp)
+#optimization packages
+library(Rcsdp)
+library(ROI)
+library(ROI.plugin.alabama)
+```
+
+```{r getWeights function}
+getWeights <- function(data, variable_order, unit_order){
+  #get the histogram from position (unit_order, variable_order) in data
+  m <-  dim(data@M)[1]
+  if(variable_order == 1){
+    specified_histogram <- data@M[[unit_order]]
+  } else {
+    position <- (variable_order-1)*m + unit_order
+    specified_histogram <- data@M[[position]]
+  }
+  
+  #get cumulative weights
+  cumulative_weights <- round(specified_histogram@p, digits=3)
+  
+  #calculate weights
+  weights <- c()
+  for(i in 1:(length(cumulative_weights)-1)){
+    weights <- append(weights, cumulative_weights[i+1]-cumulative_weights[i])
+  }
+  return(weights)
+}
+```
+
+```{r QuantileFunction function}
+QuantileFunction <- function(data, variable_order, unit_order, q){
+  #get the quantile function associated to the histogram 
+  #from position (unit_order, variable_order) in data
+
+  m <-  dim(data@M)[1]
+  
+  #get the histogram from position (unit_order, variable_order) in data
+  if(variable_order == 1){
+    specified_histogram <- data@M[[unit_order]]
+  } else {
+    position <- (variable_order-1)*m + unit_order
+    specified_histogram <- data@M[[position]]
+  }
+  
+  
+  #calculate the centres
+  subintervals <- specified_histogram@x
+  w <- specified_histogram@p
+  centres <- c()
+  for(j in 1:(length(subintervals)-1)){
+    centre <- (subintervals[j+1] + subintervals[j])/2
+    centres <- append(centres, centre)
+  }
+  
+  #get the value that the quantile function has on q
+  for(i in 1:(length(w)-1)){
+    if((w[i]<=q && q < w[i+1]) || (q==1 && i==(length(w)-1))){
+      centre_2 <- centres[i]
+      half_range <- (subintervals[i+1] - subintervals[i])/2
+      return(centre_2 + (2*(q-w[i])/(w[i+1]-w[i]) - 1)*half_range)
+    }
+  }
+}
+```
+
+```{r SymmetricQuantileFunction function}
+SymmetricQuantileFunction <- function(data, variable_order, unit_order, um_menos_q){
+  
+  #get the histogram from position (unit_order, variable_order) in data
+  m <-  dim(data@M)[1]
+  if(variable_order == 1){
+    specified_histogram <- data@M[[unit_order]]
+  } else {
+    position <- (variable_order-1)*m + unit_order
+    specified_histogram <- data@M[[position]]
+  }
+  
+  #calculate the centres
+  subintervals <- specified_histogram@x
+  w <- specified_histogram@p
+  centres <- c()
+  for(j in 1:(length(subintervals)-1)){
+    centre <- (subintervals[j+1] + subintervals[j])/2
+    centres <- append(centres, centre)
+  }
+  
+  
+  #find the cumulative weights of the symmetric histogram
+  weights <- getWeights(data, variable_order, unit_order)
+  weights <- rev(weights)
+  w <- c(0.0, weights[1])
+  soma <- weights[1]
+  for(val in 2:(length(weights))){
+    soma <- soma + weights[val]
+    w <- append(w, soma)
+  }
+  
+  
+  #get the value that the symmetric quantile function 
+  #has on the input value um_menos_q
+  q <- 1 - um_menos_q
+  n <- length(subintervals)-1
+  for(i in 1:(length(w)-1)){
+    if(w[i]<=q && q < w[i+1] || (q==1 && i==(length(w)-1))){
+      j <- n-i+1
+      centre_2 <- -centres[j]
+      half_range <- (subintervals[j+1] - subintervals[j])/2
+      return(centre_2 + (2*(q-w[i])/(w[i+1]-w[i]) - 1)*half_range)
+    }
+  }
+}
+```
+
+```{r QuantileFunctionPlot and SymmetricQuantileFunctionPlot functions}
+QuantileFunctionPlot <- function(data, variable_order, show_plot=FALSE){
+  
+  m <- dim(data@M)[1] 
+  x_axis <- c()
+  y_axis <- c()
+  units <- c()
+  
+  #get the histogram from position (unit_order, variable_order) in data
+  for(i in 1:m){
+    if(variable_order == 1){
+      specified_histogram <- data@M[[i]]
+    } else {
+      position <- (variable_order-1)*m + i
+      specified_histogram <- data@M[[position]]
+    }
+    
+    w <- specified_histogram@p
+    for(j in 1:length(w)){
+      units <- append(units, i)
+      x_axis <- append(x_axis, w[j])
+      y_axis <- append(y_axis,
+                       QuantileFunction(data,
+                                         variable_order, 
+                                         i, w[j]))
+    }
+  }
+  
+  
+  #find variable's name
+  nomes <- colnames(data@M)
+  for(j in 1:length(nomes)){
+    if(j ==  variable_order){
+      nome_da_variavel <- nomes[j]
+    }
+  }
+  
+  
+  data_for_plot <- data.frame(
+    x_axis = x_axis, y_axis = y_axis, units = units)
+  
+  if(show_plot==FALSE){ return(data_for_plot) }
+  
+  ggplot(data_for_plot, aes(x = x_axis, y = y_axis, group=factor(units))) + 
+    geom_line(aes(color=factor(units))) +
+    geom_point(aes(color=factor(units))) +
+    labs(x="cumulative weights", y = nome_da_variavel, color  = "Units")
+}
+
+
+SymmetricQuantileFunctionPlot <- function(data, variable_order, show_plot=FALSE){
+  m <- dim(data@M)[1] 
+
+  #get the histogram from position (unit_order, variable_order) in data
+  x_axis <- c()
+  y_axis <- c()
+  units <- c()
+  for(i in 1:m){
+    if(variable_order == 1){
+      specified_histogram <- data@M[[i]]
+    } else {
+      position <- (variable_order-1)*m + i
+      specified_histogram <- data@M[[position]]
+    }
+    
+    w <- specified_histogram@p
+    for(j in 1:length(w)){
+      units <- append(units, i)
+      x_axis <- append(x_axis, 1-w[j])
+      y_axis <- append(y_axis,
+                       SymmetricQuantileFunction(data,
+                                         variable_order, 
+                                         i, w[j]))
+    }
+  }
+
+  #find variable's name
+  nomes <- colnames(data@M)
+  for(j in 1:length(nomes)){
+    if(j ==  variable_order){
+      nome_da_variavel <- nomes[j]
+    }
+  }
+  
+
+  data_for_plot <- data.frame(
+    x_axis = x_axis,
+    y_axis = y_axis,
+    units = units)
+  
+  if(show_plot==FALSE){
+    return(data_for_plot)
+  }
+  
+  ggplot(data_for_plot, aes(x = x_axis, y = y_axis, group=factor(units))) + 
+    geom_line(aes(color=factor(units))) +
+    geom_point(aes(color=factor(units))) +
+    labs(x="cumulative weights", y = paste("symmetric", 
+                          nome_da_variavel, sep=" "),
+         nome_da_variavel, color  = "Units")
+}  
+```
+
+```{r Compare Histograms function}
+CompareHistograms <- function(hist1, hist2){
+  if( !identical(hist1@x, hist2@x) ){
+    return(FALSE)
+  } else if( !identical(hist1@p, hist2@p) ){
+    return(FALSE)
+  } else {
+    return(TRUE)
+  }
+}
+```
+
+```{r getSquaredMallowsDistance function}
+getSquaredMallowsDistance <- function(hist1, hist2, weights){
+  subint1 <- hist1@x
+  subint2 <- hist2@x
+
+  #find the centres and half-ranges of the histograms
+  Chist1 <- c()
+  Chist2 <- c()
+  HRhist1 <- c()
+  HRhist2 <- c()
+  for(j in 1:(length(subint1)-1)){
+      Chist1  <- append(Chist1, (subint1[j+1] + subint1[j])/2)
+      HRhist1 <- append(HRhist1, (subint1[j+1]- subint1[j])/2)
+      Chist2  <- append(Chist2, (subint2[j+1] + subint2[j])/2)
+      HRhist2 <- append(HRhist2, (subint2[j+1]- subint2[j])/2)
+  }
+  
+  
+  #calculate squared distance
+  squared_distance <- 0
+  for(i in 1:length(weights)){
+    squared_distance <- squared_distance +
+      weights[i] * ( (Chist1[i] - Chist2[i])^2 + 
+                       (1/3)*(HRhist1[i] - HRhist2[i])^2 )
+  }
+  return(squared_distance)
+}
+```
+
+```{r centres and half-ranges of histogram}
+getCentres <- function(specified_histogram){
+  subintervals <- specified_histogram@x
+  centres <- c()
+  for ( j in 1:( length ( subintervals ) -1)){
+    centres <- append ( centres , ( subintervals [ j+1] + subintervals [ j ]) / 2)
+  }
+  return(centres)
+}
+
+getHalfRanges <- function(specified_histogram){
+  subintervals <- specified_histogram@x
+  HalfRanges <- c()
+  for ( j in 1:( length ( subintervals ) -1)){
+    HalfRanges <- append ( HalfRanges , ( subintervals [ j+1] - subintervals [ j ]) / 2)
+  }
+  return(HalfRanges)
+}
+```
+
+```{r B and W matrixes functions}
+######## centers functions ######
+center_ijl <- function(data,variable_order, unit_order, subinterval_l){
+  #center of the subinterval l of the variable_order and unit_order
+  
+  m <-  dim(data@M)[1]
+  if(variable_order == 1){
+    specified_histogram <- data@M[[unit_order]]
+  } else {
+    position <- (variable_order-1)*m + unit_order
+    specified_histogram <- data@M[[position]]
+  }
+
+  subintervalos <- specified_histogram@x
+
+  return(return(((subintervalos[subinterval_l+1] + subintervalos[subinterval_l])/2)))
+}
+
+Mcenter_jlk <- function(data, variable_order, groups_vector, group_k, subinterval_l){
+  #mean_of_centers_of_observations_in_group_k_variable_order_subinterval_l
+  
+  soma <- 0
+  den <- 0
+  for(unit_index in 1:length(groups_vector)){
+    if(groups_vector[unit_index] == group_k){
+      soma <- soma + 
+        center_ijl(data,variable_order, unit_index, subinterval_l)
+     
+      den <- den + 1
+    }
+  }
+  return(soma/den)
+}
+
+Mcenter_jl <- function(data, variable_order, subinterval_l){
+  #mean_of_centers_of_observations_of_variable_order_subinterval_l
+  
+  m <- dim(data@M)[1]
+  soma <- 0
+  denominador <- 0
+  for(unit_index in 1:m){
+    soma <- soma + 
+      center_ijl(data,variable_order, unit_index, subinterval_l)
+    denominador <- denominador + 1
+  }
+  return(soma/denominador)
+}
+
+Tilcenter_deltailk<- function(data, variable_order, groups_vector, group_k, subinterval_l, unit_order){
+  return(center_ijl(data,variable_order, unit_order, subinterval_l) - Mcenter_jlk(data, variable_order, groups_vector, group_k, subinterval_l))
+}
+
+BarraTilcenter_deltalk <- function(data, variable_order, groups_vector, group_k, subinterval_l){
+  return(Mcenter_jl(data, variable_order, subinterval_l) - Mcenter_jlk(data, variable_order, groups_vector, group_k, subinterval_l))
+}
+
+
+######## half ranges functions ######
+halfRange_ijl <- function(data,variable_order, unit_order, subinterval_l){
+  m <-  dim(data@M)[1]
+  if(variable_order == 1){
+    specified_histogram <- data@M[[unit_order]]
+  } else {
+    position <- (variable_order-1)*m + unit_order
+    specified_histogram <- data@M[[position]]
+  }
+
+  subintervalos <- specified_histogram@x
+  
+  return(((subintervalos[subinterval_l+1] - subintervalos[subinterval_l])/2))
+}
+  
+MhalfRange_jlk <- function(data, variable_order, groups_vector, group_k, subinterval_l){
+  soma <- 0
+  den <- 0
+  for(unit_index in 1:length(groups_vector)){
+    if(groups_vector[unit_index] == group_k){
+      soma <- soma + 
+        halfRange_ijl(data,variable_order, unit_index, subinterval_l)
+      den <- den + 1
+    }
+  }
+  return(soma/den)
+}
+
+MhalfRange_jl <- function(data, variable_order, subinterval_l){
+  m <- dim(data@M)[1]
+  soma <- 0
+  denominador <- 0
+  for(unit_index in 1:m){
+    soma <- soma + 
+      halfRange_ijl(data,variable_order, unit_index, subinterval_l)
+    denominador <- denominador + 1
+  }
+  return(soma/denominador)
+}
+
+TilhalfRange_deltailk <- function(data, variable_order, groups_vector, group_k, subinterval_l, unit_order){
+  return(halfRange_ijl(data,variable_order, unit_order, subinterval_l) - MhalfRange_jlk(data, variable_order, groups_vector, group_k, subinterval_l))
+}
+
+BarraTilhalfRange_deltalk <- function(data, variable_order, groups_vector, group_k, subinterval_l){
+  return(MhalfRange_jl(data, variable_order, subinterval_l) - MhalfRange_jlk(data, variable_order, groups_vector, group_k, subinterval_l))
+}
+
+
+######## W_matrix and B_matrix ######
+B_matrix <- function(data, groups_vector){
+
+  m <- dim(data@M)[1]
+  p <- dim(data@M)[2]
+ 
+  values <- unique(groups_vector)
+  nk_vector <- c()
+  for(k in values){
+    count_nk <- 0
+    for(i in groups_vector){
+      if(i==k){
+        count_nk <- count_nk+1
+      }
+    }
+    nk_vector <- append(nk_vector, count_nk)
+  }
+  
+  pesos <- getWeights(data, 1,1)
+  m <- length(pesos)
+  output_matrix <-  matrix(integer(2*p*2*p), nrow = 2*p, ncol = 2*p)
+  
+  
+  for(q in 1:(2*p)){
+    for(h in q:(2*p)){
+      Bhq <- 0
+      if(h%%2 == 1 && q%%2 == 1){
+        for(nk_index in 1:length(nk_vector)){
+          nk <- nk_vector[nk_index]
+          group_k <- values[nk_index]
+          soma_nos_intervalos <- 0
+          for(subinterval_index in 1:m){
+            pl <- pesos[subinterval_index]
+
+            termo1_parte1 <- BarraTilcenter_deltalk(data,  (h+1)/2, groups_vector,
+                                                    group_k, subinterval_index)
+            termo1_parte2 <- BarraTilcenter_deltalk(data,  (q+1)/2, groups_vector,
+                                                    group_k, subinterval_index)
+            termo1 <- termo1_parte1 * termo1_parte2
+            
+            termo2_parte1 <- BarraTilhalfRange_deltalk(data,(h+1)/2, groups_vector,
+                                                       group_k, subinterval_index) 
+            termo2_parte2 <- BarraTilhalfRange_deltalk(data,(q+1)/2, groups_vector,
+                                                       group_k, subinterval_index)
+            termo2 <- termo2_parte1 * termo2_parte2
+            
+            soma_nos_intervalos <- soma_nos_intervalos + pl*(termo1 + termo2/3)
+          }
+          Bhq <- Bhq + (nk * soma_nos_intervalos)
+        }
+      }else if(h%%2 == 0 && q%%2 == 0){
+        for(nk_index in 1:length(nk_vector)){
+          nk <- nk_vector[nk_index]
+          group_k = values[nk_index]
+          soma_nos_intervalos <- 0
+          for(subinterval_index in 1:length(pesos)){
+            pl <- pesos[subinterval_index]
+            termo1_parte1 <- BarraTilcenter_deltalk(data, h/2,groups_vector,
+                                                    group_k, m-subinterval_index+1)
+            termo1_parte2 <- BarraTilcenter_deltalk(data, q/2, groups_vector,
+                                                    group_k, m-subinterval_index+1)
+            termo1 <- termo1_parte1 * termo1_parte2
+            
+            termo2_parte1 <- BarraTilhalfRange_deltalk(data, h/2, groups_vector,
+                                                       group_k,
+                                                       m-subinterval_index+1) 
+            termo2_parte2 <- BarraTilhalfRange_deltalk(data, q/2, groups_vector,
+                                                       group_k,
+                                                       m-subinterval_index+1)
+            termo2 <- termo2_parte1 * termo2_parte2
+            
+            soma_nos_intervalos <- soma_nos_intervalos + pl*(termo1 + termo2/3)
+          }
+          Bhq <- Bhq + (nk * soma_nos_intervalos)
+        }
+      }else if(h%%2 == 0 && q%%2 == 1){
+        for(nk_index in 1:length(nk_vector)){
+          nk <- nk_vector[nk_index]
+          group_k <- values[nk_index]
+          soma_nos_intervalos <- 0
+          for(subinterval_index in 1:length(pesos)){
+            pl <- pesos[subinterval_index]
+
+            termo1_parte1 <- BarraTilcenter_deltalk(data, h/2,groups_vector,
+                                                    group_k, subinterval_index)
+            termo1_parte2 <- BarraTilcenter_deltalk(data, (q+1)/2, groups_vector,
+                                                    group_k, m-subinterval_index+1)
+            termo1 <- termo1_parte1 * termo1_parte2
+            
+            termo2_parte1 <- BarraTilhalfRange_deltalk(data, h/2, groups_vector,
+                                                       group_k, subinterval_index) 
+            termo2_parte2 <- BarraTilhalfRange_deltalk(data,(q+1)/2, groups_vector,
+                                                       group_k,
+                                                       m-subinterval_index+1)
+            termo2 <- termo2_parte1 * termo2_parte2
+            
+            soma_nos_intervalos <- soma_nos_intervalos + pl*((-1)*termo1 + termo2/3)
+          }
+          Bhq <- Bhq + (nk * soma_nos_intervalos)
+        }
+      }else if(h%%2 == 1 && q%%2 == 0){
+        for(nk_index in 1:length(nk_vector)){
+          nk <- nk_vector[nk_index]
+          group_k <- values[nk_index]
+          soma_nos_intervalos <- 0
+          for(subinterval_index in 1:length(pesos)){
+            pl <- pesos[subinterval_index]
+
+            termo1_parte1 <- BarraTilcenter_deltalk(data, q/2,groups_vector,
+                                                    group_k, subinterval_index)
+            termo1_parte2 <- BarraTilcenter_deltalk(data, (h+1)/2, groups_vector,
+                                                    group_k, m-subinterval_index+1)
+            termo1 <- termo1_parte1 * termo1_parte2
+            
+            termo2_parte1 <- BarraTilhalfRange_deltalk(data, q/2, groups_vector,
+                                                       group_k, subinterval_index) 
+            termo2_parte2 <- BarraTilhalfRange_deltalk(data,(h+1)/2, groups_vector, 
+                                                       group_k,
+                                                       m-subinterval_index+1)
+            termo2 <- termo2_parte1 * termo2_parte2
+
+            soma_nos_intervalos <- soma_nos_intervalos + pl*((-1)*termo1 + termo2/3)
+          }
+          Bhq <- Bhq + (nk * soma_nos_intervalos)
+        }
+      }
+      output_matrix[h,q] <- Bhq
+      output_matrix[q,h] <- Bhq
+    }
+  }
+  return(output_matrix)
+}
+
+
+W_matrix <- function(data, groups_vector){
+
+  m <- dim(data@M)[1]
+  p <- dim(data@M)[2]
+  
+  b_vector <- c()
+  values <- unique(groups_vector)
+  
+  w <- data@M[[1]]@p
+  pesos <- getWeights(data, 1,1)
+  m <- length(pesos)
+  output_matrix <-  matrix(integer(2*p*2*p), nrow = 2*p, ncol = 2*p)
+  
+
+  for(q in 1:(2*p)){
+    for(h in q:(2*p)){
+      soma_nos_intervalos <- 0
+      if(h%%2 == 1 && q%%2 == 1){
+        for(i in 1:length(groups_vector)){
+          group_k <- groups_vector[i]
+          for(subinterval_index in 1:m){
+            pl <- pesos[subinterval_index]
+            termo1_parte1 <- Tilcenter_deltailk(data, (h+1)/2, groups_vector,
+                                                group_k, subinterval_index, i)
+            termo1_parte2 <- Tilcenter_deltailk(data, (q+1)/2, groups_vector,
+                                                group_k, subinterval_index, i)
+            termo1 <- termo1_parte1 * termo1_parte2
+                
+            termo2_parte1 <- TilhalfRange_deltailk(data, (h+1)/2, groups_vector,
+                                                   group_k, subinterval_index, i)
+            termo2_parte2 <- TilhalfRange_deltailk(data, (q+1)/2, groups_vector,
+                                                   group_k, subinterval_index, i)
+            termo2 <- termo2_parte1 * termo2_parte2
+            
+            soma_nos_intervalos <- soma_nos_intervalos + pl*(termo1 + termo2/3)
+          }
+        }
+      }else if(h%%2 == 0 && q%%2 == 0){
+        for(i in 1:length(groups_vector)){
+          group_k <- groups_vector[i]
+          for(subinterval_index in 1:m){
+            pl <- pesos[subinterval_index]
+            termo1_parte1 <- Tilcenter_deltailk(data, (h)/2, groups_vector, group_k,
+                                                m-subinterval_index+1, i)
+            termo1_parte2 <- Tilcenter_deltailk(data, (q)/2, groups_vector, group_k,
+                                                m-subinterval_index+1, i)
+            termo1 <- termo1_parte1 * termo1_parte2
+                
+            termo2_parte1 <- TilhalfRange_deltailk(data, (h)/2, groups_vector,
+                                                   group_k,m-subinterval_index+1,i)
+            termo2_parte2 <- TilhalfRange_deltailk(data, (q)/2, groups_vector,
+                                                   group_k,m-subinterval_index+1,i)
+            termo2 <- termo2_parte1 * termo2_parte2
+            
+            soma_nos_intervalos <- soma_nos_intervalos + pl*(termo1 + termo2/3)
+          }
+        }
+      }else if(h%%2 == 0 && q%%2 == 1){
+        for(i in 1:length(groups_vector)){
+          group_k <- groups_vector[i]
+          for(subinterval_index in 1:m){
+            pl <- pesos[subinterval_index]
+            termo1_parte1 <- Tilcenter_deltailk(data, (h)/2, groups_vector, 
+                                                group_k, subinterval_index, i)
+            termo1_parte2 <- Tilcenter_deltailk(data, (q+1)/2, groups_vector,
+                                                group_k, m-subinterval_index+1, i)
+            termo1 <- termo1_parte1 * termo1_parte2
+                
+            termo2_parte1 <- TilhalfRange_deltailk(data, (h)/2, groups_vector,
+                                                   group_k, subinterval_index, i)
+            termo2_parte2 <- TilhalfRange_deltailk(data, (q+1)/2, groups_vector,
+                                                   group_k,m-subinterval_index+1,i)
+            termo2 <- termo2_parte1 * termo2_parte2
+            
+            soma_nos_intervalos <- soma_nos_intervalos + pl*(-termo1 + termo2/3)
+          }
+        }
+      }else if(h%%2 == 1 && q%%2 == 0){
+        h_local <- q
+        q_local <- h
+        for(i in 1:length(groups_vector)){
+          group_k <- groups_vector[i]
+          for(subinterval_index in 1:m){
+            pl <- pesos[subinterval_index]
+            termo1_parte1 <- Tilcenter_deltailk(data, (h_local)/2, groups_vector,
+                                                group_k, subinterval_index, i)
+            termo1_parte2 <- Tilcenter_deltailk(data, (q_local+1)/2, groups_vector,
+                                                group_k, m-subinterval_index+1, i)
+            termo1 <- termo1_parte1 * termo1_parte2
+                
+            termo2_parte1 <- TilhalfRange_deltailk(data, (h_local)/2, groups_vector,
+                                                   group_k, subinterval_index, i)
+            termo2_parte2 <- TilhalfRange_deltailk(data, (q_local+1)/2,
+                                                   groups_vector, group_k,
+                                                   m-subinterval_index+1, i)
+            termo2 <- termo2_parte1 * termo2_parte2
+            
+            soma_nos_intervalos <- soma_nos_intervalos + pl*(-termo1 + termo2/3)
+          }
+        }
+      }
+      output_matrix[h,q] <- soma_nos_intervalos
+      output_matrix[q,h] <- soma_nos_intervalos
+    }
+  }
+  return(output_matrix)
+}
+```
+
+```{r BarycentricQuantileFunction function}
+RemoveUnit <- function(data, unit_order){
+  
+  m <- dim(data@M)[1] 
+  p <- dim(data@M)[2]
+  data_info <- data@M
+  
+  if(m==1){
+    return(NULL)
+  }else{
+  #find indeces to remove
+  indexes <- c(unit_order)
+  for(j in 2:p){
+    indexes <- append( indexes, ((j-1)*m + unit_order - (j-1)) )
+  }
+  
+  for(i in indexes){ data_info[[i]] <- NULL }
+  
+  return(MatH(data_info, nrows=m-1, ncols=p))
+  }
+}
+
+
+BarycentricQuantileFunction <- function(data_original, t,variables_order, groups_vector, group_k){
+  #variables_order should be a vector
+  #if groups_vector and group_k are not given
+  #calculate the global barycentric
+  
+  if (missing(groups_vector) && missing(group_k)){
+    groups_vector <- integer(dim(data_original@M)[1])
+    group_k <- 0
+  }
+  
+  #if variables_order is not given  
+  #calculate for all variables
+  if (missing(variables_order)){
+    variables_order <- 1:(dim(data_original@M)[2])
+  }
+  
+  
+  data <- data_original
+  w <- data@M[[1]]@p
+  m <- dim(data@M)[1] 
+  p <- dim(data@M)[2] 
+  
+  #select data from group k = eliminate data from group != group_k
+  unitsNotk <- c()
+  units_removed <- 0
+  for(val in 1:length(groups_vector)){
+    if(groups_vector[val] != group_k){
+      units_order_corrected <- val - units_removed
+      units_removed <- units_removed + 1
+      data <- RemoveUnit(data, units_order_corrected)
+    
+      unitsNotk <- append(unitsNotk, val)
+    }
+  }
+  
+  m <- dim(data@M)[1]
+  
+  for(i in 1:(length(w)-1)){
+    if((w[i]<=t && t < w[i+1]) || (t==1 && i==(length(w)-1))){
+      soma <- 0
+      for(variable_order in variables_order){
+        for(j in 1:m){
+          if(variable_order == 1){
+            specified_histogram <- data@M[[j]]
+          } else {
+            position <- (variable_order-1)*m + j
+            specified_histogram <- data@M[[position]]
+          }
+          subintervalos <- specified_histogram@x
+          centro <-(subintervalos[i+1] + subintervalos[i])/2
+          raio <- (subintervalos[i+1] - subintervalos[i])/2
+        
+          soma <- soma + (centro + (2*(t-w[i])/(w[i+1]-w[i]) - 1)*raio)
+        }
+      }
+      return(soma/m)
+    }
+  }
+}
+```
+
+```{r BarycentricQuantileFunctionPlot function}
+BarycentricQuantileFunctionPlot <- function(data, variables_order, show_plot=FALSE, groups_vector, group_k){
+  
+  m <- dim(data@M)[1]
+  
+  #if groups_vector and group_k are not given
+  #calculate the global barycentric
+  if (missing(groups_vector) && missing(group_k)){
+    groups_vector <- integer(dim(data@M)[1])
+    group_k <- 0
+    units <- "Global Barycenter"
+  } else {
+    units <- paste("Barycenter: Group",
+                   toString(group_k), sep=" ")
+  }
+  
+  #if variables_order is not given 
+  #calculate for all variables
+  if (missing(variables_order)){
+    variables_order <- 1:(dim(dados@M)[2])
+  }
+  
+  #find variable names
+  nomes <- colnames(data@M)
+  for(name_index in variables_order){
+    lab_y <- nomes[name_index]
+  }
+  
+  
+  x_axis <- c()
+  y_axis <- c()
+  w <- data@M[[1]]@p
+  for(j in 1:length(w)){
+    x_axis <- append(x_axis, w[j])
+    y_axis <- append(y_axis,
+                     BarycentricQuantileFunction(data, w[j],variables_order,
+                                                 groups_vector, group_k))
+    
+  }
+  
+  dataPlot <- data.frame(x_axis = x_axis,y_axis = y_axis,units = units)
+  
+  if(show_plot==FALSE){
+    dataPlot$units <- NULL
+    return(dataPlot)
+  }else{
+    pl <- ggplot(dataPlot, aes(x = x_axis, y = y_axis, colour = factor(units))) + geom_line() + geom_point() +
+    labs(x="cumulative weights", y= lab_y) + labs(colour = "Units")
+    print(dataPlot)
+    return(pl)
+  }
+}
+```
+
+```{r BarycentricHistogram function}
+BarycentricHistogram <- function(data_original, variables_order, groups_vector, group_k){
+  
+  data <- data_original
+  var_names <- colnames(data@M)
+  
+  #if groups_vector and group_k are not given
+  #calculate the global barycentric
+  if (missing(groups_vector) && missing(group_k)){
+    groups_vector <- integer(dim(data_original@M)[1])
+    group_k <- 0
+    var_names <- append(var_names, "global barycenter")
+    
+  } else {
+    var_names <- append(var_names, 
+                      paste("barycenter of group",
+                            toString(group_k), sep=" "))
+  }
+  
+  
+  #if variables_order is not given
+  #calculate for all variables
+  if (missing(variables_order)){
+    variables_order <- 1:(dim(data_original@M)[2])
+    subtitle_of_the_plot <- "for all the variables"
+  } else {
+    if(length(variables_order)==1){
+      subtitle_of_the_plot <- "for the variable"
+    } else {
+      subtitle_of_the_plot <- "for the variables"
+    }
+    
+    #find variables names
+    nomes <- colnames(data_original@M)
+    for(name_index in variables_order){
+      subtitle_of_the_plot <- paste(subtitle_of_the_plot,
+                                    nomes[name_index], sep=" ")
+    }
+  }
+  
+  
+  w <- data@M[[1]]@p
+  m <- dim(data@M)[1]
+  p <- dim(data@M)[2]
+  
+  #select data from group k = eliminate data from group != group_k
+  unitsNotk <- c()
+  units_removed <- 0
+  for(val in 1:length(groups_vector)){
+    if(groups_vector[val] != group_k){
+      units_order_corrected <- val - units_removed
+      units_removed <- units_removed + 1
+      data <- RemoveUnit(data, units_order_corrected)
+    
+      unitsNotk <- append(unitsNotk, val)
+    }
+  }
+  
+  
+  centros <- c()
+  raios <- c()
+  m <- dim(data@M)[1]
+  Nsubintervals <- length(data@M[[1]]@p) - 1
+  for(l in 1:Nsubintervals){
+    cbl <- 0
+    rbl <- 0
+    for(j in variables_order){
+      for(i in 1:m){
+        if(j == 1){
+          specified_histogram <- data@M[[i]]
+        } else {
+          position <- (j-1)*m + i
+          specified_histogram <- data@M[[position]]
+        }
+      
+        breaks <- specified_histogram@x
+        cbl <- cbl + ((breaks[l+1] + breaks[l])/2)
+        rbl <- rbl + ((breaks[l+1] - breaks[l])/2)
+      
+      }
+    }
+    centros <- append(centros, cbl/m)
+    raios <- append(raios, rbl/m)
+  }
+  
+  breaks <- c()
+  for(i in 1:length(centros)){
+    breaks <- append(breaks, (centros[i] - raios[i]))
+  }
+  breaks <- append(breaks, (centros[length(centros)] + raios[length(centros)]))
+
+  m <- dim(data@M)[1]
+  p <- dim(data@M)[2]
+  w <- data@M[[1]]@p
+  
+  dados_locaisM <- data@M
+  for(i in 1:m){
+    position <- p*m + i
+    dados_locaisM[[position]] <- distributionH(x=breaks, p=w)
+  }
+  
+  
+  dados_locais <- MatH(dados_locaisM, 
+                       nrows=m, ncols=(p+1),
+                       varnames = var_names)
+  return(dados_locais)
+}
+```
+
+```{r ScatterPlot2Variables and ScatterPlot2Hist functions}
+ScatterPlot2Hist <- function(hist1, hist2, nomehist1, nomehist2){
+  d=data.frame(x1=hist1@x[1:(length(hist1@x)-1)], 
+               x2=hist1@x[2:(length(hist1@x))], 
+               y1=hist2@x[1:(length(hist2@x)-1)],  
+               y2=hist2@x[2:(length(hist2@x))])
+  p <- ggplot() + 
+    scale_x_continuous(name=nomehist1) + 
+    scale_y_continuous(name=nomehist2) +
+    geom_rect(data=d, mapping=aes(xmin=x1, xmax=x2, 
+                                  ymin=y1, ymax=y2), 
+              color="pink", fill="pink")
+ return(p) 
+}
+
+ScatterPlot2Variables <- function(data, var1, var2){
+  m <- dim(data@M)[1]
+  
+  nomes <- colnames(data@M)
+  for(j in 1:length(nomes)){
+    if(j ==  var1){ nomeX <- nomes[j] }
+    if(j ==  var2){ nomeY <- nomes[j] }
+  }
+  
+  
+  pl <- ggplot() + 
+    scale_x_continuous(name=nomeX) + 
+    scale_y_continuous(name=nomeY)
+  
+  
+  
+  for(i in 1:m){
+    if(var1 == 1){
+      hist1 <- data@M[[i]]
+    } else {
+      position <- (var1-1)*m + i
+      hist1 <- data@M[[position]]
+    }
+    
+    if(var2 == 1){
+      hist2 <- data@M[[i]]
+    } else {
+      position <- (var2-1)*m + i
+      hist2 <- data@M[[position]]
+    }
+    
+    d=data.frame(x1=hist1@x[1:(length(hist1@x)-1)], 
+                 x2=hist1@x[2:(length(hist1@x))], 
+                 y1=hist2@x[1:(length(hist2@x)-1)],  
+                 y2=hist2@x[2:(length(hist2@x))],
+                 units = i)
+    pl <- pl + geom_rect(data=d, 
+                         mapping=aes(xmin=x1, xmax=x2,
+                                     ymin=y1, ymax=y2,
+                                     fill=factor(units)))
+    
+  }
+  pl <- pl + labs(fill = "Units")
+  return(pl) 
+}
+
+ScatterPlot2VariablesLinearBehaviour <- function(data, var1, var2){
+  m <- dim(data@M)[1]
+  
+  nomes <- colnames(data@M)
+  for(j in 1:length(nomes)){
+    if(j ==  var1){ nomeX <- nomes[j] }
+    if(j ==  var2){ nomeY <- nomes[j] }
+  }
+  
+  pl <- ggplot() + 
+    scale_x_continuous(name=nomeX) + 
+    scale_y_continuous(name=nomeY)
+  centros1 <- c()
+  centros2 <- c()
+  
+  for(i in 1:m){
+    if(var1 == 1){
+      hist1 <- data@M[[i]]
+    } else {
+      position <- (var1-1)*m + i
+      hist1 <- data@M[[position]]
+    }
+    
+    if(var2 == 1){
+      hist2 <- data@M[[i]]
+    } else {
+      position <- (var2-1)*m + i
+      hist2 <- data@M[[position]]
+    }
+    
+    d=data.frame(x1=hist1@x[1:(length(hist1@x)-1)], 
+                 x2=hist1@x[2:(length(hist1@x))], 
+                 y1=hist2@x[1:(length(hist2@x)-1)],  
+                 y2=hist2@x[2:(length(hist2@x))],
+                 units = i)
+    centros1 <- append(centros1, mean(hist1@x))
+    centros2 <- append(centros2, mean(hist2@x))
+    pl <- pl + geom_rect(data=d, 
+                         mapping=aes(xmin=x1, xmax=x2,
+                                     ymin=y1, ymax=y2,
+                                     fill=factor(units)))
+  }
+  d1=data.frame(xc=centros1 , yc=centros2)
+  pl <- pl + geom_point(data=d1, mapping = aes(x=xc , y=yc)) +
+    geom_line(data=d1, mapping = aes(x=xc , y=yc))
+  pl <- pl + labs(fill = "Units")
+  return(pl) 
+}
+```
+
+```{r CovOptimization function}
+CovOptimization <- function(data, gamma_anterior){
+  n <- dim(data@M)[1]
+  p <- dim(data@M)[2]
+  L_const <- c()
+  weights <- getWeights(data, 1,1)
+  m <- length(weights)
+  
+  for(j in 1:p){
+    Asoma <- 0
+    Bsoma <- 0
+    for(i in 1:n){
+      for(l in 1:m){
+        pl <- weights[l]
+        
+        Acijl <- center_ijl(data,j, i, l)
+        Acbarra <- Mcenter_jl(data, j, l)
+        Ac <- gamma_anterior[(2*j-1)] * (Acijl - Acbarra)^2
+        
+        Arijl <- halfRange_ijl(data,j, i, l)
+        Arbarra <- MhalfRange_jl(data, j, l)
+        Ar <- gamma_anterior[(2*j-1)] * (Arijl - Arbarra)^2
+        
+        Bcijl <- -center_ijl(data,j, i, m-l+1)
+        Bcbarra <- Mcenter_jl(data, j, m-l+1)
+        Bc <- gamma_anterior[(2*j)] * (Bcijl - Bcbarra)^2
+        
+        Brijl <- -halfRange_ijl(data,j, i, m-l+1)
+        Brbarra <- MhalfRange_jl(data, j, m-l+1)
+        Br <- gamma_anterior[(2*j)] * (Brijl - Brbarra)^2
+        
+        Asoma <- Asoma + (pl*(Ac + (1/3)*Ar))
+        Bsoma <- Bsoma + (pl*(Bc + (1/3)*Br))
+      }
+    }
+    L_const <- append(L_const, c(Asoma, Bsoma))
+  }
+  return(L_const*(1/n))
+}
+```
+
+```{r LDA2Class function - classification into 2 a priori groups }
+LDA2Class <- function(Traindata, Traingroups, Testdata, Testgroups){ 
+  
+  if(length(unique(Traingroups))>2){
+    print('Data has more than 2 classes.')
+    break
+  }else{
+    gamma <- LambdaOptimization(Traindata, Traingroups)
+  }
+  m <- dim(Testdata@M)[1]
+  w <- Testdata@M[[1]]@p
+  weights <- getWeights(Testdata, 1, 1)
+  predClass <- c()
+  values <- unique(Traingroups)
+  NequalCases <- 0
+  UnitsEqualCases <- c()
+  
+  
+  for(unit_order in 1:m){
+    distancias <- c()
+    
+    for(k in values){
+      #getting the barycenter per group of predicted histogram
+      p <- dim(Testdata@M)[2] + 1
+      #dPredHist: dados_com_predicted_histogram
+      dPredHist <- ScoreHistogramFunctionPlot(Traindata, gamma, plot_data = FALSE)
+      #dBargroup: dados_com_barycenter_for_group_k
+      dBargroup <- BarycentricHistogram(dPredHist, 1:(dim(Traindata@M)[2]),
+                                        Traingroups, k)
+      m_for_group_k <- dim(dBargroup@M)[1]
+      pm <- p*m_for_group_k
+      barycenter_for_group_k_histogram <- dBargroup@M[[pm]]
+    
+      #predicted histogram: score
+      distribution_to_add <- distributionH(x=ScoreHistogramFunction(Testdata, unit_order, gamma), p=w)
+      
+      
+      #Calculate mallows distance
+  
+    distancias <- append(distancias,
+                    getSquaredMallowsDistance(barycenter_for_group_k_histogram, distribution_to_add, weights))
+      
+    }
+    
+    if(abs(distancias[1] - distancias[2]) > 0.00001){
+      if(distancias[1] < distancias[2]){
+        predClass <- append(predClass, values[1])
+      }else{
+        predClass <- append(predClass, values[2])
+      }
+    } else { #"equal" distance to two clusters case
+      predClass <- append(predClass, sample(values, 1))
+      NequalCases <- NequalCases + 1
+      UnitsEqualCases <- append(UnitsEqualCases, unit_order)
+      
+    }
+  }
+  print("The number of cases where the distance was considered equal is was:")
+  print(NequalCases)
+  print("The units with equal cases was:")
+  print(UnitsEqualCases)
+  return(predClass)
+}
+```
+
+```{r OVA and OVO functions}
+#majority vote
+getmode <- function(votes) {
+   uniqv <- unique(votes)
+   vote_with_max_count <- c()
+   counts <- tabulate(match(votes, uniqv))
+   max_count <- max(counts)
+   
+
+   for(val_index in 1:length(counts)){
+     if(counts[val_index] == max_count){
+       vote_with_max_count <- append(vote_with_max_count, uniqv[val_index])
+     }
+   }
+   if(length(vote_with_max_count) == 1){
+     
+     return(c(uniqv[which.max(tabulate(match(votes, uniqv)))], "normal_case"))
+   }
+   else{
+     return(c(sample(vote_with_max_count, 1), "equal_case"))
+   }
+   
+}
+
+
+OVA_function <- function(Traindata, Traingroups, Testdata, Testgroups){
+  
+  g <- unique(Traingroups) 
+  m <- dim(Testdata@M)[1]
+  len_g <- length(g) 
+  dim_names <- list(g, 1:m)
+  BinClassMatrix <- matrix(integer(m*len_g), 
+                           nrow = len_g, 
+                           ncol = m, 
+                           dimnames = dim_names)
+
+  for(gi in 1:length(g)){
+    #Cg: current_group
+    Cg <- g[gi]
+    BinGroupsTest <- c()
+    for(group in Testgroups){
+      if(group == Cg){ 
+        BinGroupsTest <- append(BinGroupsTest, 1)
+      }else{  
+        BinGroupsTest <- append(BinGroupsTest, 0)
+      }
+    }
+    
+    BinGroupsTrain <- c()
+    for(group in Traingroups){
+      if(group == Cg){ 
+        BinGroupsTrain <- append(BinGroupsTrain, 1)
+      }else{  
+        BinGroupsTrain <- append(BinGroupsTrain, 0)
+      }
+    }
+
+    BinClassMatrix[gi, 1:m] <- LDA2Class(Traindata, BinGroupsTrain, 
+                                         Testdata, BinGroupsTest)
+    
+  }
+
+
+  
+  
+  finalClass <- c()
+  NequalCases <- 0
+  UnitsEqualCases <- c()
+  for(unit in 1:m){
+    UnitClass <- BinClassMatrix[1:length(g), unit]
+    if (sum(UnitClass)==0){
+      asdf <- c(sample(g, 1), "equal_case")
+      finalClass <- append(finalClass, as.numeric(asdf[1]))
+    }else{
+      
+    
+    votes <- c()
+    for(vote in 1:length(UnitClass)){
+      Cg <- g[vote]
+      if(UnitClass[vote]==1){ votes <- append(votes, Cg)} 
+      else { votes <- append(votes, g[!(g %in% Cg)]) }
+    }
+    
+
+    asdf <- getmode(votes)
+    finalClass <- append(finalClass, as.numeric(asdf[1]))
+    }
+    if(asdf[2] == "equal_case"){
+      NequalCases <- NequalCases + 1
+      UnitsEqualCases <- append(UnitsEqualCases, unit)
+    }
+  }
+  
+  print("The number of cases where the distance was considered equal is was:")
+  print(NequalCases)
+  #print("The units with equal cases was:")
+  #print(UnitsEqualCases)
+  return(finalClass)
+}
+
+
+OVO_function <- function(Traindata, Traingroups, Testdata, Testgroups){
+
+  g <- unique(Traingroups)
+  len_g <- length(g) 
+  m <- dim(Testdata@M)[1]
+  dim_names <- list(g, 1:m)
+  BinClassMatrix  <- matrix(integer(m*len_g),
+                            nrow = len_g, 
+                            ncol = m, 
+                            dimnames = dim_names)
+
+  
+  for(gi1 in 1:(length(g)-1)){
+    #Cg1: current_group1
+    Cg1 <- g[gi1]
+    for(gi2 in (gi1+1):length(g)){
+      #Cg2: current_group2
+      Cg2 <- g[gi2]
+
+      BinGroupsTrain <- c()
+      subset_dataTrain <- Traindata
+      unitsNotk <- c()
+      units_removed <- 0
+      units_in_groups <- c()
+      for(i in 1:length(Traingroups)){
+        if(Traingroups[i] != Cg1 && Traingroups[i] != Cg2){
+          units_order_corrected <- i - units_removed
+          units_removed <- units_removed + 1
+          subset_dataTrain <- RemoveUnit(subset_dataTrain, units_order_corrected)
+          unitsNotk <- append(unitsNotk, i)
+        } else {
+          BinGroupsTrain <- append(BinGroupsTrain, Traingroups[i])
+          units_in_groups <- append(units_in_groups, i)
+        }
+      }
+      
+      
+      BinClass <- LDA2Class(subset_dataTrain, BinGroupsTrain, 
+                            Testdata, Testgroups)
+      
+      for(index in 1:length(BinClass)){
+        gPred <- BinClass[index]
+        if(gPred == Cg1){
+          BinClassMatrix[gi1, index] <- BinClassMatrix[gi1, index] + 1
+        } else if(gPred == Cg2){
+          BinClassMatrix[gi2, index] <- BinClassMatrix[gi2, index] + 1
+        } else {
+          print('isto não está bem')
+        }
+      }
+    } 
+  }
+
+  finalClass  <- c()
+  NequalCases  <- 0
+  UnitsEqualCases  <- c()
+  for(unit in 1:m){
+    counts <- BinClassMatrix[1:len_g, unit]
+    max_count <- max(counts)
+    groups_with_max_count <- c()
+    
+    for(val_index in 1:length(counts)){
+     if(counts[val_index] == max_count){
+       groups_with_max_count <- append(groups_with_max_count, g[val_index])
+     }
+    }
+    
+    
+    if(length(groups_with_max_count) == 1){
+      finalClass <- append(finalClass, groups_with_max_count)
+    }
+    else{
+      finalClass <- append(finalClass, 
+                           sample(groups_with_max_count, 1))
+      NequalCases  <- NequalCases  + 1
+      UnitsEqualCases  <- append(UnitsEqualCases, unit)
+    }
+  }
+  print("The number of cases where the distance was considered equal is was:")
+  print(NequalCases )
+  #print("The units with equal cases was:")
+  #print(UnitsEqualCases)
+  return(finalClass)
+}
+```
+
+```{r ScoreQuantileFunction and ScoreHistogramFunction functions}
+ScoreQuantileFunction <- function(data, unit_order, t, gamma){
+
+  w <- data@M[[unit_order]]@p
+  y_value <- 0
+
+  for(i in 1:(length(w)-1)){
+    if((w[i]<=t && t < w[i+1]) || (t==1 && i==(length(w)-1))){
+
+      n <- dim(data@M)[2]
+      pos <- 1
+      for(j in 1:n){
+        y_value <-y_value +
+          (gamma[pos]*QuantileFunction(data, j, unit_order, t)) +
+          (gamma[pos+1]*SymmetricQuantileFunction(data, j, unit_order, 1-t))
+        pos <- pos + 2
+      }
+    }
+  }
+  return(y_value)
+}
+
+
+ScoreHistogramFunction <- function(data, unit_order, gamma){
+  
+  w <- data@M[[unit_order]]@p
+  Y_breaks <- c()
+  n_subintervalos <- length(w)
+  for(i in 1:n_subintervalos){
+    Y_break_value <- 0
+    p <- dim(data@M)[2] 
+    m <- dim(data@M)[1]
+    pos <- 1
+    for(k in 1:p){
+
+      if(k == 1){
+        specified_histogram <- data@M[[unit_order]]
+      } else {
+        position <- (k-1)*m + unit_order
+        specified_histogram <- data@M[[position]]
+      }
+      breaks <- specified_histogram@x  
+
+      j <- n_subintervalos-i+1
+      Y_break_value <- Y_break_value + ((gamma[pos]*breaks[i]) -
+                                          (gamma[pos+1]*breaks[j]))
+      pos <- pos + 2
+    }
+    Y_breaks <- append(Y_breaks, Y_break_value)
+  }
+  return(Y_breaks)
+}
+```
+
+```{r ScoreQuantileFunctionPlot function}
+ScoreQuantileFunctionPlot <- function(data, gamma){
+  m <- dim(data@M)[1]
+  w <- data@M[[1]]@p
+  x_axis <- c()
+  y_axis <- c()
+  units <- c()
+  for(j in 1:length(w)){
+    for(i in 1:m){
+      units <- append(units, i)
+      x_axis <- append(x_axis, w[j])
+      y_axis <- append(y_axis,
+                       ScoreQuantileFunction(data, i, w[j], gamma))
+    }
+  }
+  
+  
+  data_for_plot <- data.frame(
+    x_axis = x_axis,
+    y_axis = y_axis,
+    units = units)
+  
+  ggplot(data_for_plot, aes(x = x_axis, y = y_axis, group=factor(units))) + 
+    geom_line(aes(color=factor(units))) + geom_point(aes(color=factor(units))) +
+    labs(title="Plot of the Predicted Quantile Function",
+         x="cumulative weights", 
+         y = "Predicted Variable",
+         color  = "Units")
+}
+```
+
+```{r ScoreHistogramFunctionPlot function}
+ScoreHistogramFunctionPlot <- function(data, gamma, plot_data = FALSE){
+
+  data_info <- data@M
+  len_data <- length(data_info)
+  p <- dim(data@M)[2]
+  m <- dim(data@M)[1]
+  var_names <- colnames(data@M)
+  w <- data@M[[1]]@p
+  
+  for(i in 1:m){
+    pos <- len_data + i
+    data_info[[pos]] <- distributionH(x=ScoreHistogramFunction(data, i, gamma),
+                                      p=w)
+  }
+  
+  output_data <- MatH(data_info, nrows=m, ncols =(p+1), varnames = c(var_names,"Scores"))
+  
+  
+  if(plot_data == TRUE){ return(HistDAWass::plot(output_data))
+  } else { return(output_data) }
+}
+```
+
+```{r LDAClassification function}
+LDAClassification <- function(Traindata, Traingroups, Testdata, Testgroups, classification_technique="OVA", print_prediction=FALSE){
+
+  Ngroups <- length(unique(Testgroups))
+  l <- length(Testgroups)
+
+  
+  if(Ngroups == 2){ #2 a priori groups
+    
+    print("Binary Classification")
+    predClass <- LDA2Class(Traindata, Traingroups, 
+                           Testdata, Testgroups)
+    if(print_prediction == TRUE){ print(predClass)  }
+    
+    print("Confusion Matrix")
+    print(confusionMatrix(factor(predClass), factor(Testgroups)))
+  
+    #returns the accuracy/hit rate
+    return((sum(predClass == Testgroups))/l)
+    
+  
+  } else if(Ngroups != 2){ #multi-class classification
+    print("Multi Classification")
+    
+    if(classification_technique=="OVA"){
+      
+      predClass <- OVA_function(Traindata, Traingroups, 
+                                Testdata, Testgroups)
+      if(print_prediction == TRUE){ print(predClass) }
+      
+      print("Confusion Matrix")
+      print(confusionMatrix(factor(predClass), factor(Testgroups)))
+  
+      return((sum(predClass == Testgroups))/l)
+      
+    }else if(classification_technique=="OVO"){
+      
+      predClass <- OVO_function(Traindata, Traingroups, 
+                                Testdata, Testgroups)
+      if(print_prediction == TRUE){ print(predClass) }
+      
+      print("Confusion Matrix")
+      print(confusionMatrix(factor(predClass), factor(Testgroups)))
+  
+      return((sum(predClass == Testgroups))/l)
+      
+    } else if(classification_technique=="CLDF with weights"){
+      
+      predClass <- CLDF_function(Traindata, Traingroups, Testdata, Testgroups)
+      if(print_prediction == TRUE){ print(predClass)  }
+      
+      print("Confusion Matrix")
+      print(confusionMatrix(factor(predClass), factor(Testgroups)))
+      
+      return((sum(predClass == Testgroups))/l)
+      
+    } else if(classification_technique=="CLDF without weights"){
+      
+      predClass <- CLDF_function_without_weights(Traindata, Traingroups, Testdata, Testgroups)
+      if(print_prediction == TRUE){ print(predClass)  }
+      
+      print("Confusion Matrix")
+      print(confusionMatrix(factor(predClass), factor(Testgroups)))
+      
+      return((sum(predClass == Testgroups))/l)
+      
+    }else{
+      
+      print('Choose a proper classification technique: OVA, OVO, CLDF without weights or CLDF with weights')
+    }
+  }
+}
+```
+
+```{r SymbCovariance and SymbCorrelation functions}
+SymbCovariance <- function(data, variable_order1, variable_order2){
+
+  weights <- getWeights(data, 1, 1)
+  
+  barycenter1 <- BarycentricQuantileFunctionPlot(data, c(variable_order1))
+  barycenter1 <- distributionH(x=barycenter1$y_axis, 
+                               p=barycenter1$x_axis)
+  
+  
+  barycenter2 <- BarycentricQuantileFunctionPlot(data, c(variable_order2))
+  barycenter2 <- distributionH(x=barycenter2$y_axis, 
+                               p=barycenter2$x_axis)
+  
+  covG <- 0
+  n <- dim(data@M)[1]
+  if(variable_order1 == 1){  position1 <- 1} 
+  else { position1 <- (variable_order1-1)*n + 1 }
+    
+  if(variable_order2 == 1){ position2 <- 1 } 
+  else { position2 <- (variable_order2-1)*n + 1 }
+  
+  for(i in 1:n){
+    if(i==1){
+      specified_histogram1 <- data@M[[position1]]
+      specified_histogram2 <- data@M[[position2]]
+    }else{
+      position1 <- position1 + 1
+      position2 <- position2 + 1
+      specified_histogram1 <- data@M[[position1]]
+      specified_histogram2 <- data@M[[position2]]
+    }
+    
+    
+    m <- length(weights)
+    Chist1 <- getCentres(specified_histogram1)
+    HRhist1 <- getHalfRanges(specified_histogram1)
+    Chist2 <- getCentres(specified_histogram2)
+    HRhist2 <- getHalfRanges(specified_histogram2)
+    Cbar1 <- getCentres(barycenter1)
+    HRbar1 <- getHalfRanges(barycenter1)
+    Cbar2 <- getCentres(barycenter2)
+    HRbar2 <- getHalfRanges(barycenter2)
+    covLocal <- 0
+    for(l in 1:m){
+      termo1 <- (Chist1[l] - Cbar1[l])*(Chist2[l] - Cbar2[l])
+      termo2 <- (1/3)*(HRhist1[l]-HRbar1[l])*(HRhist2[l]-HRbar2[l])
+      
+      covLocal <- covLocal + (weights[l] *(termo1 + termo2))
+    }
+    
+    covG <- covG + covLocal
+  }
+  return(covG/n)
+}
+
+
+SymbCorrelation <- function(data, variable_order1, variable_order2){
+  
+  weights <- getWeights(data, 1, 1)
+  
+  bar1 <- BarycentricQuantileFunctionPlot(data, c(variable_order1))
+  bar1 <- distributionH(x=bar1$y_axis, p=bar1$x_axis)
+  
+  
+  bar2 <- BarycentricQuantileFunctionPlot(data, c(variable_order2))
+  bar2 <- distributionH(x=bar2$y_axis, p=bar2$x_axis)
+  
+  numerador <- 0
+  denominador <- 0
+  n <- dim(data@M)[1]
+  if(variable_order1 == 1){position1 <- 1} 
+  else {position1 <- (variable_order1-1)*n + 1}
+    
+  if(variable_order2 == 1){position2 <- 1 } 
+  else {position2 <- (variable_order2-1)*n + 1}
+  
+  for(i in 1:n){
+    if(i==1){
+      hist1 <- data@M[[position1]]
+      hist2 <- data@M[[position2]]
+    }else{
+      position1 <- position1 + 1
+      position2 <- position2 + 1
+      hist1 <- data@M[[position1]]
+      hist2 <- data@M[[position2]]
+    }
+    
+    #denominator for unit i
+    mallows_distance1 <- sqrt(getSquaredMallowsDistance(hist1, bar1, weights))
+    mallows_distance2 <- sqrt(getSquaredMallowsDistance(hist2, bar2, weights))
+    denominador_local <- mallows_distance1 * mallows_distance2
+    
+    
+    #numerator for unit i
+    m <- length(weights)
+    Chist1 <- getCentres(hist1)
+    HRhist1 <- getHalfRanges(hist1)
+    Chist2 <- getCentres(hist2)
+    HRhist2 <- getHalfRanges(hist2)
+    Cbar1 <- getCentres(bar1)
+    HRbar1 <- getHalfRanges(bar1)
+    Cbar2 <- getCentres(bar2)
+    HRbar2 <- getHalfRanges(bar2)
+    numerador_local <- 0
+    for(l in 1:m){
+      termo1 <- (Chist1[l] - Cbar1[l])*(Chist2[l] - Cbar2[l])
+      termo2 <- (1/3)*(HRhist1[l]-HRbar1[l])*(HRhist2[l]-HRbar2[l])
+      
+      numerador_local <- numerador_local + (weights[l] *(termo1 + termo2))
+    }
+    
+    
+    denominador <- denominador + denominador_local
+    numerador <- numerador + numerador_local
+  }
+  if(denominador != 0){
+    return(numerador/denominador)
+  } else {
+    print("denominador == 0")
+    print(denominador)
+    print("numerador")
+    print(numerador)
+  }
+}
+```
+
+```{r RewrittingOperationFunction and getOrderedCumulWeights functions}
+getOrderedCumulWeights <- function(data, epsilon=0.001){
+
+  W <- c()
+  p <- dim(data@M)[2]
+  m <- dim(data@M)[1]
+  
+  for(i in 1:m){
+    for(j in 1:p){
+      if(j == 1){
+        W <- append(W, round(data@M[[i]]@p, digits=3))
+        
+        #w do simetrico 
+        pesos <- getWeights(data,j,i)
+        pesos <- rev(pesos)
+        w <- c(0.0, pesos[1])
+        soma <- pesos[1]
+        for(val in 2:(length(pesos))){
+          soma <- soma + pesos[val]
+          w <- append(w, soma)
+        }
+        W <- append(W, w)
+        
+        
+      } else {
+        position <- (j-1)*m + i
+        W <- append(W, round(data@M[[position]]@p, digits = 3))
+        
+        #w do simetrico 
+        pesos <- getWeights(data,j,i)
+        pesos <- rev(pesos)
+        w <- c(0.0, pesos[1])
+        soma <- pesos[1]
+        for(val in 2:(length(pesos))){
+          soma <- soma + pesos[val]
+          w <- append(w, soma)
+        }
+        W <- append(W, w)
+      }
+    }
+  }
+
+  W_copy <- W
+  Z <- c(0.00)
+  while(length(W_copy) != 0){
+    minimo <- min(W_copy)
+    minimo_mais_epsilon <- minimo + epsilon
+    #find elements within (minimo, minimo+epsilon)
+    elements_to_remove <- c()
+    for(val in W_copy){
+      if(val >= minimo && val <= minimo_mais_epsilon){
+        elements_to_remove <- append(elements_to_remove, val)
+      }
+    }
+    
+    if(minimo>tail(Z, n=1)){
+      Z <- append(Z, minimo)
+      W_copy <- W_copy[! W_copy %in% elements_to_remove]
+    } else {
+      W_copy <- W_copy[! W_copy %in% elements_to_remove]
+    }
+  }
+
+  len_Z <- length(Z)
+  Z <- Z[1:(len_Z-1)]
+  Z <- append(Z, 1)
+  return(Z)
+}
+
+RewrittingOperationFunction <- function(data){
+  Z <- getOrderedCumulWeights(data)
+  p <- dim(data@M)[2]
+  m <- dim(data@M)[1]
+  
+  for(i in 1:m){
+    for(j in 1:p){
+      
+      breaks <- c()
+      for(k in 1:length(Z)){
+        breaks <- append(breaks, QuantileFunction(data, j, i, Z[k]))
+      }
+      
+      
+      if(j == 1){ data@M[[i]] <- distributionH(x=breaks, p=Z)} 
+      else {
+        position <- (j-1)*m + i
+        data@M[[position]] <- distributionH(x=breaks, p=Z)
+      }
+    }
+  }
+  return(data)
+}
+```
+
+```{r TrainTestSplit function}
+TrainTestSplit <- function(data, groups_vector, test_size=0.2, train_size=0.8){
+  #groups_vector <- as.numeric(groups_vector)
+  n <- dim(data@M)[1]
+  p <- dim(data@M)[2]
+  sample <- sample(c(TRUE, FALSE), replace = TRUE, 
+                   n, prob=c(train_size,test_size))
+  train <- c()
+  test <- c()
+
+  for(j in 0:(p-1)){
+    for(val in 1:n){
+      vali <- j*n + val
+      if(sample[val]==TRUE){
+        train <- append(train, data@M[[vali]])
+      }else{
+        test <- append(test, data@M[[vali]])
+      }
+    }
+  }
+  train <- MatH(train, nrows=sum(sample), ncols = p)
+  train_groups <- groups_vector[sample]
+  test <- MatH(test, nrows=n-sum(sample), ncols = p)
+  test_groups <- groups_vector[!sample]
+  
+  return(list("trainSet" = train, "trainGroups" = train_groups, 
+              "testSet" = test, "testGroups" = test_groups))
+  
+}
+```
+
+```{r Classification CLDF functions}
+CLDF_function <- function(Traindata, Traingroups, Testdata, Testgroups){
+  
+  sol <- LambdaOptimization(Traindata, Traingroups)
+  print(sol)
+  
+  pVm <- sol$ParameterVectorMatrix 
+  npV <- dim(pVm)[2]  
+  somaLambdas <- sol$SomadosLambdas 
+  dimV <- 2*dim(Traindata@M)[2] 
+  values <- unique(Traingroups) 
+  n <- dim(Testdata@M)[1]
+  w <-  Testdata@M[[1]]@p
+  weights <- getWeights(Testdata, 1, 1)
+  count_equal_cases <- 0
+  len_values <- length(values)
+  final_classification <- c()
+  
+  for(unit_order in 1:n){
+    distancias <- c()
+    for(gammaOrd in 1:npV){
+      parameter_vector <- pVm[1:dimV, gammaOrd]
+      name_column <- paste('ParameterVector', 
+                           toString(gammaOrd),
+                           sep="")
+      for(k_index in 1:len_values){
+        k <- values[k_index]
+        #getting the barycenter per group of predicted histogram
+        p <- dim(Testdata@M)[2] + 1
+        #dPredHist: dados_com_predicted_histogram
+        dPredHist <- ScoreHistogramFunctionPlot(Traindata, parameter_vector, plot_data = FALSE)
+        #dBargroup: dados_com_barycenter_for_group_k
+        dBargroup <- BarycentricHistogram(dPredHist, 1:(dim(Traindata@M)[2]), Traingroups, k)
+        m_for_group_k <- dim(dBargroup@M)[1]
+        pm <- p*m_for_group_k
+        barycenter_for_group_k_histogram <- dBargroup@M[[pm]]
+    
+        #predicted histogram: score
+        distribution_to_add <- distributionH(x=ScoreHistogramFunction(Testdata, unit_order, parameter_vector), p=w)
+        #Calculate mallows distance
+        distLocal <-
+          getSquaredMallowsDistance(barycenter_for_group_k_histogram,
+                                    distribution_to_add, weights)
+  
+        if(gammaOrd==1){
+          distancias <- append(distancias,
+                               (sol[[name_column]]$lambda/somaLambdas)*distLocal)
+        }else{
+          distancias[k_index] <- distancias[k_index] + 
+            ((sol[[name_column]]$lambda/somaLambdas)*distLocal)
+        }
+  
+      }
+    }
+    
+    #classificação final: find groups with minimum distance
+    distMinima <- distancias[1]
+    #gDM: groups_with_distancia_minima
+    gDM <- values[1]
+    for(distOrder in 2:len_values){
+      if(abs(distancias[distOrder] - distMinima) > 0.00001){
+        if(distancias[distOrder] < distMinima){
+          distMinima <- distancias[distOrder]
+          gDM <- values[distOrder]
+        }#end if
+        
+      } else { #"equal" distanced clusters case 
+        gDM <- append(gDM, values[distOrder])
+          
+      }#end else
+    }#end for
+    
+    
+    if(length(gDM)==1){
+      final_classification <- append(final_classification, gDM)
+    }else{
+      final_classification <- append(final_classification,
+                                  sample(gDM, 1))
+      count_equal_cases <- count_equal_cases + 1
+      
+    }
+
+  }
+  print("The number of cases where the distance was considered equal is was:")
+  print(count_equal_cases)
+  return(final_classification)
+}
+```
+
+```{r LambdaOptimization function}
+LambdaOptimization <- function(data, groups_vector){
+  BI <- B_matrix(data, groups_vector)
+  WI <- W_matrix(data, groups_vector)
+  nI <- dim(BI)[1]
+  val <- 0.05
+  solucao_final <- c()
+  somaLambdas <- 0
+  nGroups <- length(unique(groups_vector))
+  mLDF <- nGroups-1
+  p <- nI/2
+  x0 <- numeric(nI) + val
+  fn <- function(x) -{((t(x) %*% BI %*% t(t(x))) / (t(x) %*% WI %*% t(t(x))))}[1,1]
+  
+  
+  if(nGroups == 2){
+    #lower bound
+    qpL <- OP(F_objective(F=fn, n=nI))
+    
+    #The default for each variable is a bound between 
+    #0 and Inf
+    
+    soltL <- ROI_solve(qpL, solver = "nlminb", start=x0)
+    solL <- -soltL$objval
+    parametersL <- soltL$solution
+    
+    
+    #upper bound
+    C <- list(BI)
+    A <- list(list(WI))
+    b <- c(1)
+    K <- list(type=c("s"), size=c(nI))
+    soltU <- csdp(C,A,b,K)
+    parametersU <- soltU$X[[1]]
+    solU <- soltU$pobj
+    
+    return(parametersL)
+    
+  } else{
+    pVm <- matrix(integer(nI*mLDF), nrow=nI, ncol = 1)
+    
+    for(gammaOrd in 1:mLDF){
+      if(gammaOrd == 1){
+        #lower bound
+        qpL <- OP(F_objective(F=fn, n=nI))
+        
+        #The default for each variable is a bound between 
+        #0 and Inf
+        
+        soltL <- ROI_solve(qpL, solver = "nlminb", start=x0)
+        solL <- -soltL$objval
+        parametersL <- soltL$solution
+        
+        
+        #possível não convergência
+        NC <- 'Não Converge! Todos os parâmetros são 0.05!'
+        for(i in 1:length(parametersL)){
+          if(parametersL[i] != 0.05){
+            NC <- 'Converge!'
+          }#end if
+        }#end for
+        
+        #upper bound
+        C <- list(BI)
+        A <- list(list(WI))
+        b <- c(1)
+        K <- list(type=c("s"), size=c(nI))
+        soltU <- csdp(C,A,b,K)
+        if(soltU$status==0 | soltU$status==2){
+          parametersU <- soltU$X[[1]]
+          solU <- soltU$pobj
+        
+          somaLambdas <- somaLambdas + solL
+          solucao_final$ParameterVector1$lambda <- solL
+          solucao_final$ParameterVector1$parameters <- parametersL
+          pVm[1:nI, gammaOrd] = parametersL
+        }else{ print('problemas!!') }
+      }else{
+        #correlation constraint
+        gamma_ant <- pVm[1:nI, 1]
+        CorrConst = matrix(CovOptimization(data, gamma_ant),
+                           ncol = nI)
+        if((gammaOrd-1)>=2){
+          for(i in 2:(gammaOrd-1)){
+            gamma_ant <- pVm[1:nI, i]
+            CorrConst <- rbind(CorrConst,
+                               CovOptimization(data, gamma_ant))
+          }
+        }
+        
+        nJ <- nrow(CorrConst)
+        
+        #lower bound
+        qpL <- OP(F_objective(F=fn, n=nI),
+                 L_constraint(L=CorrConst,
+                              dir = rep("==", nJ),
+                              rhs = rep(0, nJ))
+        )
+        
+        soltL <- ROI_solve(qpL, solver = "alabama", start=x0)
+        solL <- -soltL$objval
+        parametersL <- soltL$solution
+        
+        
+        for(i in 1:length(parametersL)){
+          if(parametersL[i] < 0){
+            parametersL[i] <- 0
+          }#end if
+        }#end for
+        solL <- -fn(parametersL) 
+        
+        
+        
+        #upper bound
+        C1 <- list(BI)
+        A1 <- list(list(WI))
+        for(iJ in 1:nJ){
+          A1 <- append(A1, list(list(diag((CorrConst[iJ, 1:nI])^2))))
+        }
+        b1 <- c(1, rep(0, nJ))
+        K1 <- list(type=c("s"), size=c(nI))
+        solRelax1 <- csdp(C1,A1,b1,K1)
+        if(solRelax1$status==0 | solRelax1$status==2){
+          parametersU <- solRelax1$X[[1]]
+          solU <- solRelax1$pobj 
+          
+          name_column <- paste('ParameterVector', 
+                               toString(gammaOrd),
+                               sep="")
+          
+          somaLambdas <- somaLambdas + solL
+          solucao_final$name_column$lambda <- solL
+          solucao_final$name_column$parameters <- parametersL
+          names(solucao_final)[gammaOrd] <- name_column
+          pVm = cbind(pVm, parametersL)
+        }else{
+          print('Problem infeasible')
+          solucao_final$ParameterVectorMatrix <- pVm
+          solucao_final$SomadosLambdas <- somaLambdas
+          return(solucao_final) 
+        }
+      }#end else
+    }#endfor
+    solucao_final$ParameterVectorMatrix <- pVm
+    solucao_final$SomadosLambdas <- somaLambdas
+    return(solucao_final) 
+  }
+}
+```
+
+```{r classification CLDF without weights}
+CLDF_function_without_weights <- function(Traindata, Traingroups, Testdata, Testgroups){
+  
+  sol <- LambdaOptimization(Traindata, Traingroups)
+  print(sol)
+  
+  pVm <- sol$ParameterVectorMatrix 
+  npV <- dim(pVm)[2]  
+  somaLambdas <- sol$SomadosLambdas 
+  dimV <- 2*dim(Traindata@M)[2] 
+  values <- unique(Traingroups) 
+  n <- dim(Testdata@M)[1]
+  w <-  Testdata@M[[1]]@p
+  weights <- getWeights(Testdata, 1, 1)
+  count_equal_cases <- 0
+  len_values <- length(values)
+  final_classification <- c()
+  
+  for(unit_order in 1:n){
+    distancias <- c()
+    for(gammaOrd in 1:npV){
+      parameter_vector <- pVm[1:dimV, gammaOrd]
+      name_column <- paste('ParameterVector', 
+                           toString(gammaOrd),
+                           sep="")
+      for(k_index in 1:len_values){
+        k <- values[k_index]
+        #getting the barycenter per group of predicted histogram
+        p <- dim(Testdata@M)[2] + 1
+        #dPredHist: dados_com_predicted_histogram
+        dPredHist <- ScoreHistogramFunctionPlot(Traindata, parameter_vector, plot_data = FALSE)
+        #dBargroup: dados_com_barycenter_for_group_k
+        dBargroup <- BarycentricHistogram(dPredHist, 1:(dim(Testdata@M)[2]), Traingroups, k)
+        m_for_group_k <- dim(dBargroup@M)[1]
+        pm <- p*m_for_group_k
+        barycenter_for_group_k_histogram <- dBargroup@M[[pm]]
+    
+        #predicted histogram: score
+        distribution_to_add <- distributionH(x=ScoreHistogramFunction(Testdata, unit_order, parameter_vector), p=w)
+        #Calculate mallows distance
+        distLocal <-
+          getSquaredMallowsDistance(barycenter_for_group_k_histogram,
+                                    distribution_to_add, weights)
+  
+        if(gammaOrd==1){
+          distancias <- append(distancias, distLocal)
+        }else{
+          distancias[k_index] <- distancias[k_index] + 
+            (distLocal)
+        }
+  
+      }
+    }
+    
+
+    distMinima <- distancias[1]
+    #gDM: groups_with_distancia_minima
+    gDM <- values[1]
+    for(distOrder in 2:len_values){
+      if(abs(distancias[distOrder] - distMinima) > 0.00001){
+        if(distancias[distOrder] < distMinima){
+          distMinima <- distancias[distOrder]
+          gDM <- values[distOrder]
+        }#end if
+      } else { #"equal" distanced clusters case
+        gDM <- append(gDM, values[distOrder])
+      }#end else
+    }#end for
+    
+    if(length(gDM)==1){
+      final_classification <- append(final_classification, gDM)
+    }else{
+      final_classification <- append(final_classification,
+                                  sample(gDM, 1))
+      count_equal_cases <- count_equal_cases + 1
+    }
+    
+  }
+  print("The number of cases where the distance was considered equal is was:")
+  print(count_equal_cases)
+  return(final_classification)
+}
+```
+
